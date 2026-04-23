@@ -9,7 +9,7 @@ LAYERS=$((18 + ${LAYER_SUFFIX}))
 LOAD_REPO=${LOAD_REPO:-"quay.io/vchalla/clair-load-test"}
 IMAGES=${IMAGES:-"quay.io/clair-load-test/mysql:8.0.25"}
 
-unique_id=$(cat /proc/sys/kernel/random/uuid)
+unique_id=$(uuidgen)
 
 for image in ${IMAGES//,/ }; do
   tag_prefix=$(basename "$image")
@@ -70,8 +70,8 @@ EOF
     echo "RUN chmod +x /app$i/*" >> "$dockerfile_tmp"
 
     # Build, push, remove
-    podman build -f "$dockerfile_tmp" --tag "$tag_name" --storage-opt "overlay.mount_program=/usr/bin/fuse-overlayfs" --storage-driver overlay -
-    podman push "$tag_name" --tls-verify=false --storage-opt "overlay.mount_program=/usr/bin/fuse-overlayfs" --storage-driver overlay
+    podman build -f "$dockerfile_tmp" --tag "$tag_name" -
+    podman push "$tag_name" --tls-verify=false
     podman rmi "$tag_name"
 
     rm -f "$dockerfile_tmp"
