@@ -76,6 +76,14 @@ spec:
             value: <quay-token>
           - name: QUAY_ORG
             value: <quay-test-org>
+          - name: ES_HOST
+            value: <es-host>
+          - name: ES_PORT
+            value: <es-port>
+          - name: ES_INDEX
+            value: <es-index>
+          - name: PUSH_PULL_ES_INDEX
+            value: <push-pull-es-index>
           - name: PYTHONUNBUFFERED
             value: "0"
           - name: RESULTS_DIR
