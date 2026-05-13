@@ -24,7 +24,11 @@ import redis
 import requests
 import warnings
 
-from elasticsearch import Elasticsearch, helpers
+try:
+    from elasticsearch import Elasticsearch, helpers
+except ImportError:
+    Elasticsearch = None
+    helpers = None
 from kubernetes import client, config
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -33,6 +37,16 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Used for executing tests across multiple pods
 redis_client = redis.Redis(host='redis')
+
+
+def write_results_to_file(results, results_dir, filename):
+    if not os.path.isdir(results_dir):
+        os.makedirs(results_dir)
+    filepath = os.path.join(results_dir, filename)
+    with open(filepath, 'w') as f:
+        json.dump(results, f, indent=2,
+                  default=lambda o: o.isoformat() if isinstance(o, datetime.datetime) else str(o))
+    logging.info("Results written to local file: %s", filepath)
 
 
 # Configure Logging
@@ -185,28 +199,40 @@ def podman_create(tags, custom_build_image="", concurrency=4):
             if n % 10 == 0:
                 logging.info(f"{n}/{len(tags)} images completed pushing")
 
-    # Write results to Elasticsearch
-    logging.info("Writing 'registry push' results to Elasticsearch")
-    es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
-    docs = [{
-        '_index': env_config["push_pull_es_index"],
-        'type': '_doc',
-        '_source': r
-    } for r in push_results]
-    helpers.bulk(es, docs)
-
-    # Print summary
-    elapsed_times = [r['elapsed_time'] for r in push_results]
-    summary = {
-        'durations': {
-            'mean': mean(elapsed_times),
-            'max': max(elapsed_times),
-            'min': min(elapsed_times),
-        },
-        'pushes': {
-            'total': len(push_results)
+    # Compute summary
+    if push_results:
+        elapsed_times = [r['elapsed_time'] for r in push_results]
+        summary = {
+            'durations': {
+                'mean': mean(elapsed_times),
+                'max': max(elapsed_times),
+                'min': min(elapsed_times),
+            },
+            'total': len(push_results),
+            'successful': sum(1 for r in push_results if r['successful']),
+            'failed': sum(1 for r in push_results if not r['successful']),
         }
-    }
+    else:
+        summary = {'durations': {}, 'total': 0, 'successful': 0, 'failed': 0}
+
+    # Write results to local filesystem
+    write_results_to_file({'summary': summary, 'results': push_results},
+                          env_config["results_directory"],
+                          '%s_push_results.json' % env_config["test_uuid"])
+
+    # Write results to Elasticsearch (if configured)
+    if env_config["es_host"] and Elasticsearch:
+        logging.info("Writing 'registry push' results to Elasticsearch")
+        es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
+        docs = [{
+            '_index': env_config["push_pull_es_index"],
+            'type': '_doc',
+            '_source': r
+        } for r in push_results]
+        helpers.bulk(es, docs)
+    else:
+        logging.info("ES not configured — push results saved to local file only")
+
     logging.info('Podman-Push Summary')
     logging.info(json.dumps(summary, sort_keys=True, indent=2))
 
@@ -367,7 +393,7 @@ def pull_single_image_http(tag, username=None, password=None, max_failures=3):
         'end_time': end_time,
         'success_count': success_count,
         'failure_count': failure_count,
-        'successful': (success_count == len(digests)),
+        'successful': (failure_count == 0),
     }
 
 
@@ -400,17 +426,7 @@ def podman_pull(tags, concurrency, username=None, password=None):
             if n % 10 == 0:
                 logging.info(f"Pulling {n}/{len(tags)} images completed.")
 
-    # Write results to Elasticsearch
-    logging.info("Writing 'registry pull' results to Elasticsearch")
-    es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
-    docs = [{
-        '_index': env_config["push_pull_es_index"],
-        'type': '_doc',
-        '_source': r
-    } for r in results]
-    helpers.bulk(es, docs)
-
-    # Summary logging (same fields as earlier)
+    # Compute summary
     if results:
         elapsed_times = [r['elapsed_time'] for r in results]
         summary = {
@@ -419,12 +435,30 @@ def podman_pull(tags, concurrency, username=None, password=None):
                 'max': max(elapsed_times),
                 'min': min(elapsed_times),
             },
-            'pulls': {
-                'total': len(results)
-            }
+            'total': len(results),
+            'successful': sum(1 for r in results if r['successful']),
+            'failed': sum(1 for r in results if not r['successful']),
         }
     else:
-        summary = {'durations': {}, 'pulls': {'total': 0}}
+        summary = {'durations': {}, 'total': 0, 'successful': 0, 'failed': 0}
+
+    # Write results to local filesystem
+    write_results_to_file({'summary': summary, 'results': results},
+                          env_config["results_directory"],
+                          '%s_pull_results.json' % env_config["test_uuid"])
+
+    # Write results to Elasticsearch (if configured)
+    if env_config["es_host"] and Elasticsearch:
+        logging.info("Writing 'registry pull' results to Elasticsearch")
+        es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
+        docs = [{
+            '_index': env_config["push_pull_es_index"],
+            'type': '_doc',
+            '_source': r
+        } for r in results]
+        helpers.bulk(es, docs)
+    else:
+        logging.info("ES not configured — pull results saved to local file only")
 
     logging.info('HTTP-Pull Summary')
     logging.info(json.dumps(summary, sort_keys=True, indent=2))
@@ -512,6 +546,7 @@ def create_test_push_job(namespace, quay_host, username, password, concurrency,
         client.V1EnvVar(name='ES_PORT', value=str(env_config["es_port"])),
         client.V1EnvVar(name='ES_INDEX', value=env_config["es_index"]),
         client.V1EnvVar(name='TEST_PHASES', value=env_config["test_phases"]),
+        client.V1EnvVar(name='RESULTS_DIR', value=env_config["results_directory"]),
     ]
 
     resource_requirements = client.V1ResourceRequirements(
@@ -528,7 +563,7 @@ def create_test_push_job(namespace, quay_host, username, password, concurrency,
         env=env_vars,
         resources=resource_requirements,
     )
-        
+
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={'quay-perf-test-component-push': 'executor-'+"-".join(username.split("_"))}),
         spec=client.V1PodSpec(restart_policy='Never', containers=[container])
@@ -586,6 +621,7 @@ def create_test_pull_job(namespace, quay_host, username, password, concurrency,
         client.V1EnvVar(name='ES_PORT', value=str(env_config["es_port"])),
         client.V1EnvVar(name='ES_INDEX', value=env_config["es_index"]),
         client.V1EnvVar(name='TEST_PHASES', value=env_config["test_phases"]),
+        client.V1EnvVar(name='RESULTS_DIR', value=env_config["results_directory"]),
     ]
 
     resource_requirements = client.V1ResourceRequirements(
@@ -602,7 +638,7 @@ def create_test_pull_job(namespace, quay_host, username, password, concurrency,
         env=env_vars,
         resources=resource_requirements,
     )
-        
+
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={'quay-perf-test-component-pull': 'executor-'+"-".join(username.split("_"))}),
         spec=client.V1PodSpec(restart_policy='Never', containers=[container])
