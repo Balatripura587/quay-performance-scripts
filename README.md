@@ -65,18 +65,23 @@ This should spin up a redis pod and a test orchestrator pod in your desired name
 
 ### Running without Elasticsearch
 
-Elasticsearch is optional. When ES env vars (`ES_HOST`, `ES_PORT`, `ES_INDEX`, `PUSH_PULL_ES_INDEX`) are not set, all results are written to local JSON files instead. Use `deploy/test.job.local.yaml` which includes a PVC (`quay-perf-results`, 5Gi) mounted at `/results` for persistent storage.
+Elasticsearch is optional. When ES env vars (`ES_HOST`, `ES_PORT`, `ES_INDEX`, `PUSH_PULL_ES_INDEX`) are not set, all results are written to local JSON files instead. The default `deploy/test.job.yaml` uses an `emptyDir` volume mounted at `/results` — no storage provisioning required.
 
 ```bash
-oc apply -f deploy/test.job.local.yaml -n <namespace>
+oc apply -f deploy/test.job.yaml -n <namespace>
 ```
 
-After the test completes, retrieve results from the PVC:
+> **NOTE**: `emptyDir` is ephemeral — results are lost when the pod is deleted. Copy results out before cleaning up the job. For persistent storage, replace `emptyDir: {}` with a PVC in the job YAML:
+> ```yaml
+> volumes:
+>   - name: test-results
+>     persistentVolumeClaim:
+>       claimName: quay-perf-results
+> ```
+
+After the test completes, retrieve results from the pod:
 ```bash
-oc run pvc-reader --image=busybox --restart=Never -n <namespace> \
-  --overrides='{"spec":{"containers":[{"name":"pvc-reader","image":"busybox","command":["sleep","3600"],"volumeMounts":[{"name":"results","mountPath":"/results"}]}],"volumes":[{"name":"results","persistentVolumeClaim":{"claimName":"quay-perf-results"}}]}}'
-oc cp <namespace>/pvc-reader:/results ./results
-oc delete pod pvc-reader -n <namespace>
+oc cp <namespace>/<pod-name>:/results ./results
 ```
 
 Result files:

@@ -23,8 +23,8 @@ RUN wget https://github.com/tsenart/vegeta/releases/download/v12.8.3/vegeta-12.8
 RUN mkdir -p /opt/snafu/ \
  && wget -O /tmp/benchmark-wrapper.tar.gz https://github.com/cloud-bulldozer/benchmark-wrapper/archive/refs/tags/v1.0.0.tar.gz \
  && tar -xzf /tmp/benchmark-wrapper.tar.gz -C /opt/snafu/ --strip-components=1 \
- && pip install --upgrade pip \
- && pip install -e /opt/snafu/ \
+ && pip install --upgrade pip "setuptools<71" \
+ && pip install --no-build-isolation -e /opt/snafu/ \
  && pip install "numpy<2" \
  && rm -rf /tmp/benchmark-wrapper.tar.gz
 
