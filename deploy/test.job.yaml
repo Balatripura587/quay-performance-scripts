@@ -114,6 +114,18 @@ spec:
         imagePullPolicy: Always
       volumes:
         - name: test-results
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: quay-perf-results
       restartPolicy: Never
   backoffLimit: 0
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: quay-perf-results
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

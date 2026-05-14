@@ -49,6 +49,20 @@ def write_results_to_file(results, results_dir, filename):
     logging.info("Results written to local file: %s", filepath)
 
 
+def write_results_to_es(env_config, results):
+    if not (env_config["es_host"] and Elasticsearch):
+        logging.info("ES not configured — results saved to local file only")
+        return
+    logging.info("Writing results to Elasticsearch: %s", env_config["es_host"])
+    es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
+    docs = [{
+        '_index': env_config["push_pull_es_index"],
+        'type': '_doc',
+        '_source': r
+    } for r in results]
+    helpers.bulk(es, docs)
+
+
 # Configure Logging
 logging.basicConfig(
     stream=sys.stdout,
@@ -220,18 +234,11 @@ def podman_create(tags, custom_build_image="", concurrency=4):
                           env_config["results_directory"],
                           '%s_push_results.json' % env_config["test_uuid"])
 
-    # Write results to Elasticsearch (if configured)
-    if env_config["es_host"] and Elasticsearch:
-        logging.info("Writing 'registry push' results to Elasticsearch")
-        es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
-        docs = [{
-            '_index': env_config["push_pull_es_index"],
-            'type': '_doc',
-            '_source': r
-        } for r in push_results]
-        helpers.bulk(es, docs)
-    else:
-        logging.info("ES not configured — push results saved to local file only")
+    write_results_to_es(env_config, push_results)
+
+    for r in push_results:
+        redis_client.rpush('push_results:' + env_config["test_uuid"],
+                           json.dumps(r, default=lambda o: o.isoformat() if isinstance(o, datetime.datetime) else str(o)))
 
     logging.info('Podman-Push Summary')
     logging.info(json.dumps(summary, sort_keys=True, indent=2))
@@ -447,18 +454,11 @@ def podman_pull(tags, concurrency, username=None, password=None):
                           env_config["results_directory"],
                           '%s_pull_results.json' % env_config["test_uuid"])
 
-    # Write results to Elasticsearch (if configured)
-    if env_config["es_host"] and Elasticsearch:
-        logging.info("Writing 'registry pull' results to Elasticsearch")
-        es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
-        docs = [{
-            '_index': env_config["push_pull_es_index"],
-            'type': '_doc',
-            '_source': r
-        } for r in results]
-        helpers.bulk(es, docs)
-    else:
-        logging.info("ES not configured — pull results saved to local file only")
+    write_results_to_es(env_config, results)
+
+    for r in results:
+        redis_client.rpush('pull_results:' + env_config["test_uuid"],
+                           json.dumps(r, default=lambda o: o.isoformat() if isinstance(o, datetime.datetime) else str(o)))
 
     logging.info('HTTP-Pull Summary')
     logging.info(json.dumps(summary, sort_keys=True, indent=2))
@@ -679,6 +679,7 @@ def parallel_process(user, **kwargs):
     :return: None
     """
     common_args = kwargs
+    env_config = Config().get_config()
     # Container Operations
     redis_client.delete('tags_to_push'+"-".join(user.split("_")))  # avoid stale data
     redis_client.rpush('tags_to_push'+"-".join(user.split("_")), *common_args['tags'])
@@ -686,6 +687,9 @@ def parallel_process(user, **kwargs):
 
     redis_client.delete('tags_to_pull'+"-".join(user.split("_")))  # avoid stale data
     redis_client.rpush('tags_to_pull'+"-".join(user.split("_")), *common_args['tags'])
+
+    redis_client.delete('push_results:' + common_args['uuid'])  # avoid stale data
+    redis_client.delete('pull_results:' + common_args['uuid'])  # avoid stale data
     logging.info('Queued %s tags to be pulled' % len(common_args['tags']))
 
     # Start the Registry Push Test job
@@ -710,6 +714,26 @@ def parallel_process(user, **kwargs):
             logging.info('Waiting for %s to finish. Queue: %s/%s' % (job_name, remaining, len(common_args['tags'])))
             time.sleep(60 * 1)  # 1 minute
 
+        # Collect push results from all worker pods via Redis
+        push_results = []
+        while True:
+            data = redis_client.lpop('push_results:' + common_args['uuid'])
+            if data is None:
+                break
+            push_results.append(json.loads(data))
+        if push_results:
+            elapsed_times = [r['elapsed_time'] for r in push_results]
+            summary = {
+                'durations': {'mean': mean(elapsed_times), 'max': max(elapsed_times), 'min': min(elapsed_times)},
+                'total': len(push_results),
+                'successful': sum(1 for r in push_results if r.get('successful')),
+                'failed': sum(1 for r in push_results if not r.get('successful')),
+            }
+            write_results_to_file({'summary': summary, 'results': push_results},
+                                  env_config["results_directory"],
+                                  '%s_push_results.json' % common_args['uuid'])
+            logging.info("Collected %d push results from worker pods", len(push_results))
+
     # Start the Registry Pull Test job
     create_test_pull_job(common_args['namespace'], common_args['quay_host'], user, common_args['password'], 
                          common_args['concurrency'], common_args['uuid'], common_args['auth_token'], 
@@ -731,6 +755,26 @@ def parallel_process(user, **kwargs):
         remaining = redis_client.llen('tags_to_pull'+"-".join(user.split("_")))
         logging.info('Waiting for %s to finish. Queue: %s/%s' % (job_name, remaining, len(common_args['tags'])))
         time.sleep(60 * 1)  # 1 minute
+
+    # Collect pull results from all worker pods via Redis
+    pull_results = []
+    while True:
+        data = redis_client.lpop('pull_results:' + common_args['uuid'])
+        if data is None:
+            break
+        pull_results.append(json.loads(data))
+    if pull_results:
+        elapsed_times = [r['elapsed_time'] for r in pull_results]
+        summary = {
+            'durations': {'mean': mean(elapsed_times), 'max': max(elapsed_times), 'min': min(elapsed_times)},
+            'total': len(pull_results),
+            'successful': sum(1 for r in pull_results if r.get('successful')),
+            'failed': sum(1 for r in pull_results if not r.get('successful')),
+        }
+        write_results_to_file({'summary': summary, 'results': pull_results},
+                              env_config["results_directory"],
+                              '%s_pull_results.json' % common_args['uuid'])
+        logging.info("Collected %d pull results from worker pods", len(pull_results))
 
 
 def batch_process(users_chunk, batch_args):
