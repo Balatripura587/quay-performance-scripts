@@ -29,8 +29,6 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           containerfiles: |
             ./Dockerfile
-          build-args: |
-            DEBIAN_FRONTEND=noninteractive
           platforms: linux/amd64
 
       - name: Push image to Quay.io
