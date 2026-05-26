@@ -1,4 +1,9 @@
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quay-perf
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -18,7 +23,7 @@ roleRef:
   name: quay-perf-test-serviceaccount
 subjects:
 - kind: ServiceAccount
-  name: default
+  name: quay-perf
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -42,6 +47,12 @@ spec:
         imagePullPolicy: "IfNotPresent"
         ports:
         - containerPort: 6379
+        volumeMounts:
+        - name: redis-data
+          mountPath: /var/lib/redis/data
+      volumes:
+      - name: redis-data
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -58,54 +69,64 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: quay-perf-test-orchestrator
+  name: quay-perf-test-orchestrator-1
   labels:
     quay-perf-test-component: orchestrator
 spec:
+  backoffLimit: 0
   template:
     spec:
+      serviceAccountName: quay-perf
+      restartPolicy: Never
       containers:
       - name: python
-        image: quay.io/projectquay/quay-load:latest
+        image: quay.io/rh-ee-bbodapat/quay-load:es-optional-logfix
         securityContext:
           privileged: true
+        imagePullPolicy: Always
         env:
           - name: QUAY_HOST
-            value: <quay-host>
+            value: "quay.apps.cluster-qsrst.dynamic2.redhatworkshops.io"
+          - name: QUAY_PASSWORD
+            value: "r5bLtJNaCpok"
+          - name: QUAY_USERNAME
+            value: "quayadmin"
           - name: QUAY_OAUTH_TOKEN
-            value: <quay-token>
+            value: "XDZL29eGUjVZRgaBo24F6fAPPumKivoWY1WRvmeL"
           - name: QUAY_ORG
-            value: <quay-test-org>
-          - name: ES_HOST
-            value: <es-host>
-          - name: ES_PORT
-            value: <es-port>
-          - name: ES_INDEX
-            value: <es-index>
-          - name: PUSH_PULL_ES_INDEX
-            value: <push-pull-es-index>
+            value: "test"
           - name: PYTHONUNBUFFERED
             value: "0"
           - name: PUSH_PULL_IMAGE
-            value: <image-for-testing>
+            value: "quay.io/rh-ee-bbodapat/quay-load:es-optional-logfix"
           - name: PUSH_PULL_NUMBERS
-            value: <number-of-push-pull-images>
+            value: "2"
           - name: TARGET_HIT_SIZE
-            value: <hit-size>
+            value: "10000"
           - name: CUSTOM_BUILD_IMAGE
-            value: "quay.io/vchalla/bugzooka:latest"
+            value: "quay.apps.cluster-qsrst.dynamic2.redhatworkshops.io/test/quay-load:v1.1"
           - name: TEST_BATCH_SIZE
             value: "1"
           - name: CONCURRENCY
-            value: <concurrency>
+            value: "1"
           - name: TEST_NAMESPACE
-            value: <test-namespace>
+            value: "test-quay"
           - name: TEST_PHASES
-            value: "LOAD,RUN,DELETE"
+            value: "PUSH_PULL"
+          - name: SKIP_PUSH
+            value: "true"
+          - name: TAGS
+            value: "quay.apps.cluster-qsrst.dynamic2.redhatworkshops.io/test/quay-load:v1.1,quay.apps.cluster-qsrst.dynamic2.redhatworkshops.io/test/quay-load:latest"
+        volumeMounts:
+          - name: tmp-logs
+            mountPath: /tmp/logs
         resources:
           requests:
             cpu: "1"
             memory: "512Mi"
-        imagePullPolicy: Always
-      restartPolicy: Never
-  backoffLimit: 0
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+      volumes:
+        - name: tmp-logs
+          emptyDir: {}

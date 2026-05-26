@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: quay-perf-test-orchestrator-1
+  labels:
+    quay-perf-test-component: orchestrator
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: quay-perf
+      restartPolicy: Never
+      containers:
+        - name: python
+          image: quay.io/rh-ee-bbodapat/quay-load:redis-results
+          securityContext:
+            privileged: true
+          imagePullPolicy: Always
+          env:
+            - name: QUAY_HOST
+              value: "quay.apps.cluster-qsrst.dynamic2.redhatworkshops.io"
+            - name: QUAY_PASSWORD
+              value: "r5bLtJNaCpok"
+            - name: QUAY_USERNAME
+              value: "quayadmin"
+            - name: QUAY_OAUTH_TOKEN
+              value: "XDZL29eGUjVZRgaBo24F6fAPPumKivoWY1WRvmeL"
+            - name: QUAY_ORG
+              value: "test"
+            - name: PYTHONUNBUFFERED
+              value: "0"
+            - name: PUSH_PULL_IMAGE
+              value: "quay.io/rh-ee-bbodapat/quay-load:redis-results"
+            - name: PUSH_PULL_NUMBERS
+              value: "2"
+            - name: TARGET_HIT_SIZE
+              value: "10000"
+            - name: CUSTOM_BUILD_IMAGE
+              value: "quay.apps.cluster-qsrst.dynamic2.redhatworkshops.io/test/quay-load:v1.1"
+            - name: TEST_BATCH_SIZE
+              value: "1"
+            - name: CONCURRENCY
+              value: "1"
+            - name: TEST_NAMESPACE
+              value: "quay-enterprise"
+            - name: TEST_PHASES
+              value: "PUSH_PULL"
+            - name: SKIP_PUSH
+              value: "true"
+            - name: TAGS
+              value: "quay.apps.cluster-qsrst.dynamic2.redhatworkshops.io/test/quay-load:v1.1,quay.apps.cluster-qsrst.dynamic2.redhatworkshops.io/test/quay-load:latest"
+          volumeMounts:
+            - name: tmp-logs
+              mountPath: /tmp/logs
+            - name: tmp-results
+              mountPath: /tmp/results
+          resources:
+            requests:
+              cpu: "1"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+      volumes:
+        - name: tmp-logs
+          emptyDir: {}
+        - name: tmp-results
+          emptyDir: {}

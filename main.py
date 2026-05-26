@@ -39,36 +39,17 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 redis_client = redis.Redis(host='redis')
 
 
-def write_results_to_file(results, results_dir, filename):
-    if not os.path.isdir(results_dir):
-        os.makedirs(results_dir)
-    filepath = os.path.join(results_dir, filename)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+
+
+def write_results_to_file(data, directory, filename):
+    if not os.path.isdir(directory):
+        os.makedirs(directory, exist_ok=True)
+    filepath = os.path.join(directory, filename)
     with open(filepath, 'w') as f:
-        json.dump(results, f, indent=2,
-                  default=lambda o: o.isoformat() if isinstance(o, datetime.datetime) else str(o))
-    logging.info("Results written to local file: %s", filepath)
+        json.dump(data, f, indent=2, default=str)
+    logging.info("Results written to %s", filepath)
 
-
-def write_results_to_es(env_config, results):
-    if not (env_config["es_host"] and Elasticsearch):
-        logging.info("ES not configured — results saved to local file only")
-        return
-    logging.info("Writing results to Elasticsearch: %s", env_config["es_host"])
-    es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
-    docs = [{
-        '_index': env_config["push_pull_es_index"],
-        'type': '_doc',
-        '_source': r
-    } for r in results]
-    helpers.bulk(es, docs)
-
-
-# Configure Logging
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.DEBUG,  # DEBUG to see HTTP attempts, INFO for progress
-    format='%(asctime)s [%(levelname)s] %(message)s'
-)
 
 def podman_login(username, password):
     """
@@ -100,7 +81,7 @@ def build_push_delete_single_image(tag, custom_build_image, max_failures=3):
     # Build
     unique_id = str(uuid.uuid4())
     dockerfile = (
-        f"FROM {custom_build_image if custom_build_image != "" else 'quay.io/jitesoft/alpine'}\n"
+        f"FROM {custom_build_image if custom_build_image else 'quay.io/jitesoft/alpine'}\n"
         f"RUN echo {unique_id} > /tmp/key.txt"
     )
 
@@ -108,6 +89,7 @@ def build_push_delete_single_image(tag, custom_build_image, max_failures=3):
         'podman',
         'build',
         '--tag', tag,
+        '--tls-verify=false',
         '--storage-opt', 'overlay.mount_program=/usr/bin/fuse-overlayfs',
         '--storage-driver', 'overlay',
         '--no-cache',
@@ -229,16 +211,18 @@ def podman_create(tags, custom_build_image="", concurrency=4):
     else:
         summary = {'durations': {}, 'total': 0, 'successful': 0, 'failed': 0}
 
-    # Write results to local filesystem
-    write_results_to_file({'summary': summary, 'results': push_results},
-                          env_config["results_directory"],
-                          '%s_push_results.json' % env_config["test_uuid"])
-
-    write_results_to_es(env_config, push_results)
+    if env_config["es_host"] and Elasticsearch:
+        es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
+        docs = [{
+            '_index': env_config["push_pull_es_index"],
+            'type': '_doc',
+            '_source': r
+        } for r in push_results]
+        helpers.bulk(es, docs)
 
     for r in push_results:
         redis_client.rpush('push_results:' + env_config["test_uuid"],
-                           json.dumps(r, default=lambda o: o.isoformat() if isinstance(o, datetime.datetime) else str(o)))
+                           json.dumps(r, default=str))
 
     logging.info('Podman-Push Summary')
     logging.info(json.dumps(summary, sort_keys=True, indent=2))
@@ -449,16 +433,18 @@ def podman_pull(tags, concurrency, username=None, password=None):
     else:
         summary = {'durations': {}, 'total': 0, 'successful': 0, 'failed': 0}
 
-    # Write results to local filesystem
-    write_results_to_file({'summary': summary, 'results': results},
-                          env_config["results_directory"],
-                          '%s_pull_results.json' % env_config["test_uuid"])
-
-    write_results_to_es(env_config, results)
+    if env_config["es_host"] and Elasticsearch:
+        es = Elasticsearch([env_config["es_host"]], port=env_config["es_port"])
+        docs = [{
+            '_index': env_config["push_pull_es_index"],
+            'type': '_doc',
+            '_source': r
+        } for r in results]
+        helpers.bulk(es, docs)
 
     for r in results:
         redis_client.rpush('pull_results:' + env_config["test_uuid"],
-                           json.dumps(r, default=lambda o: o.isoformat() if isinstance(o, datetime.datetime) else str(o)))
+                           json.dumps(r, default=str))
 
     logging.info('HTTP-Pull Summary')
     logging.info(json.dumps(summary, sort_keys=True, indent=2))
@@ -546,7 +532,6 @@ def create_test_push_job(namespace, quay_host, username, password, concurrency,
         client.V1EnvVar(name='ES_PORT', value=str(env_config["es_port"])),
         client.V1EnvVar(name='ES_INDEX', value=env_config["es_index"]),
         client.V1EnvVar(name='TEST_PHASES', value=env_config["test_phases"]),
-        client.V1EnvVar(name='RESULTS_DIR', value=env_config["results_directory"]),
     ]
 
     resource_requirements = client.V1ResourceRequirements(
@@ -556,17 +541,20 @@ def create_test_push_job(namespace, quay_host, username, password, concurrency,
         }
     )
 
+    volume_mount = client.V1VolumeMount(name='tmp-logs', mount_path='/tmp/logs')
     container = client.V1Container(
         name='python',
         image=image,
         security_context={'privileged': True},
         env=env_vars,
         resources=resource_requirements,
+        volume_mounts=[volume_mount],
     )
 
+    volume = client.V1Volume(name='tmp-logs', empty_dir=client.V1EmptyDirVolumeSource())
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={'quay-perf-test-component-push': 'executor-'+"-".join(username.split("_"))}),
-        spec=client.V1PodSpec(restart_policy='Never', containers=[container])
+        spec=client.V1PodSpec(restart_policy='Never', service_account_name='quay-perf', containers=[container], volumes=[volume])
     )
 
     spec = client.V1JobSpec(template=template, backoff_limit=0,
@@ -621,7 +609,6 @@ def create_test_pull_job(namespace, quay_host, username, password, concurrency,
         client.V1EnvVar(name='ES_PORT', value=str(env_config["es_port"])),
         client.V1EnvVar(name='ES_INDEX', value=env_config["es_index"]),
         client.V1EnvVar(name='TEST_PHASES', value=env_config["test_phases"]),
-        client.V1EnvVar(name='RESULTS_DIR', value=env_config["results_directory"]),
     ]
 
     resource_requirements = client.V1ResourceRequirements(
@@ -631,17 +618,20 @@ def create_test_pull_job(namespace, quay_host, username, password, concurrency,
         }
     )
 
+    volume_mount = client.V1VolumeMount(name='tmp-logs', mount_path='/tmp/logs')
     container = client.V1Container(
         name='python',
         image=image,
         security_context={'privileged': True},
         env=env_vars,
         resources=resource_requirements,
+        volume_mounts=[volume_mount],
     )
 
+    volume = client.V1Volume(name='tmp-logs', empty_dir=client.V1EmptyDirVolumeSource())
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={'quay-perf-test-component-pull': 'executor-'+"-".join(username.split("_"))}),
-        spec=client.V1PodSpec(restart_policy='Never', containers=[container])
+        spec=client.V1PodSpec(restart_policy='Never', service_account_name='quay-perf', containers=[container], volumes=[volume])
     )
 
     spec = client.V1JobSpec(template=template, backoff_limit=0,
@@ -680,6 +670,10 @@ def parallel_process(user, **kwargs):
     """
     common_args = kwargs
     env_config = Config().get_config()
+
+    redis_client.delete('push_results:' + common_args['uuid'])
+    redis_client.delete('pull_results:' + common_args['uuid'])
+
     # Container Operations
     redis_client.delete('tags_to_push'+"-".join(user.split("_")))  # avoid stale data
     redis_client.rpush('tags_to_push'+"-".join(user.split("_")), *common_args['tags'])
@@ -687,9 +681,6 @@ def parallel_process(user, **kwargs):
 
     redis_client.delete('tags_to_pull'+"-".join(user.split("_")))  # avoid stale data
     redis_client.rpush('tags_to_pull'+"-".join(user.split("_")), *common_args['tags'])
-
-    redis_client.delete('push_results:' + common_args['uuid'])  # avoid stale data
-    redis_client.delete('pull_results:' + common_args['uuid'])  # avoid stale data
     logging.info('Queued %s tags to be pulled' % len(common_args['tags']))
 
     # Start the Registry Push Test job
@@ -714,7 +705,6 @@ def parallel_process(user, **kwargs):
             logging.info('Waiting for %s to finish. Queue: %s/%s' % (job_name, remaining, len(common_args['tags'])))
             time.sleep(60 * 1)  # 1 minute
 
-        # Collect push results from all worker pods via Redis
         push_results = []
         while True:
             data = redis_client.lpop('push_results:' + common_args['uuid'])
@@ -756,7 +746,6 @@ def parallel_process(user, **kwargs):
         logging.info('Waiting for %s to finish. Queue: %s/%s' % (job_name, remaining, len(common_args['tags'])))
         time.sleep(60 * 1)  # 1 minute
 
-    # Collect pull results from all worker pods via Redis
     pull_results = []
     while True:
         data = redis_client.lpop('pull_results:' + common_args['uuid'])

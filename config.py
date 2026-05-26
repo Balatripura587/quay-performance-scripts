@@ -17,7 +17,8 @@ class Config:
         Sets the input config from ENVS.
         """
         self.config = {
-            'log_directory': './logs',
+            'log_directory': '/tmp/logs',
+            'results_directory': os.environ.get('RESULTS_DIR', '/tmp/results'),
             'protocol': 'https',
             'quay_host': os.environ.get("QUAY_HOST"),
             'quay_org': os.environ.get("QUAY_ORG"),
@@ -31,7 +32,6 @@ class Config:
             'pull_layers': int(os.environ.get('PULL_LAYERS', 0)),
             'pull_repo_prefix': os.environ.get('PULL_REPO_PREFIX', ''),
             'push_pull_es_index': os.environ.get('PUSH_PULL_ES_INDEX', ''),
-            'results_directory': os.environ.get('RESULTS_DIR', './results'),
             'push_pull_numbers': int(os.environ.get("PUSH_PULL_NUMBERS", 50)),
             'concurrency': int(os.environ.get("CONCURRENCY", 50)),
             'target_hit_size': int(os.environ.get('TARGET_HIT_SIZE')),

@@ -1,0 +1,8 @@
+FROM quay.io/rh-ee-bbodapat/quay-load:es-optional-logfix
+
+WORKDIR /tmp
+USER root
+
+COPY . .
+
+ENTRYPOINT ["python3", "main.py"]
