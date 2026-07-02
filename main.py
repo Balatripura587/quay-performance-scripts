@@ -554,7 +554,7 @@ def create_test_push_job(namespace, quay_host, username, password, concurrency,
     volume = client.V1Volume(name='tmp-logs', empty_dir=client.V1EmptyDirVolumeSource())
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={'quay-perf-test-component-push': 'executor-'+"-".join(username.split("_"))}),
-        spec=client.V1PodSpec(restart_policy='Never', service_account_name='quay-perf', containers=[container], volumes=[volume])
+        spec=client.V1PodSpec(restart_policy='Never', containers=[container], volumes=[volume])
     )
 
     spec = client.V1JobSpec(template=template, backoff_limit=0,
@@ -631,7 +631,7 @@ def create_test_pull_job(namespace, quay_host, username, password, concurrency,
     volume = client.V1Volume(name='tmp-logs', empty_dir=client.V1EmptyDirVolumeSource())
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={'quay-perf-test-component-pull': 'executor-'+"-".join(username.split("_"))}),
-        spec=client.V1PodSpec(restart_policy='Never', service_account_name='quay-perf', containers=[container], volumes=[volume])
+        spec=client.V1PodSpec(restart_policy='Never', containers=[container], volumes=[volume])
     )
 
     spec = client.V1JobSpec(template=template, backoff_limit=0,

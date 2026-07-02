@@ -10,15 +10,11 @@ oc new-project test-quay
 ```
 
 ## Step 2: Grant privileged SCC (requires cluster-admin)
-These cannot be done via YAML - must be run as separate commands:
+This cannot be done via YAML - must be run as a separate command:
 ```bash
-oc adm policy add-scc-to-user privileged -z quay-perf -n test-quay
 oc adm policy add-scc-to-user privileged -z default -n test-quay
 ```
-- `quay-perf` SA is used by the orchestrator pod
-- `default` SA is used by the worker pods (push/pull jobs spawned by the orchestrator)
-
-Both need privileged SCC because the containers run with `privileged: true` for podman-in-pod.
+The `default` SA is used by both the orchestrator and worker pods. It needs privileged SCC because the containers run with `privileged: true` for podman-in-pod.
 
 ## Step 3: Update full-setup.yaml
 Before deploying, update these values in `full-setup.yaml`:
@@ -40,7 +36,7 @@ Before deploying, update these values in `full-setup.yaml`:
 ```bash
 oc apply -f full-setup.yaml -n test-quay
 ```
-This creates: ServiceAccount, Role, RoleBinding, Redis (Deployment + Service), and the orchestrator Job.
+This creates: Role, RoleBinding, Redis (Deployment + Service), PVC for results, and the orchestrator Job.
 
 ## Step 5: Monitor
 ```bash
@@ -52,6 +48,25 @@ oc logs -f job/quay-perf-test-orchestrator-1 -n test-quay
 
 # Follow worker pod logs (name appears in orchestrator logs)
 oc logs -f job/test-registry-pullXXXXX -n test-quay
+```
+
+## Step 6: Retrieve Results
+Results are written to a PVC (`quay-perf-results`) mounted at `/tmp/results` on the orchestrator pod. They persist after the pod completes.
+
+To retrieve, mount the PVC to a temporary pod:
+```bash
+oc run results-reader --image=registry.access.redhat.com/ubi8/ubi-minimal --restart=Never \
+  --overrides='{"spec":{"containers":[{"name":"results-reader","image":"registry.access.redhat.com/ubi8/ubi-minimal","command":["sleep","3600"],"volumeMounts":[{"name":"results","mountPath":"/tmp/results"}]}],"volumes":[{"name":"results","persistentVolumeClaim":{"claimName":"quay-perf-results"}}]}}' \
+  -n test-quay
+
+# Wait for pod to start
+oc wait --for=condition=Ready pod/results-reader -n test-quay
+
+# Copy results locally
+oc cp test-quay/results-reader:/tmp/results ./results
+
+# Clean up the reader pod
+oc delete pod results-reader -n test-quay
 ```
 
 ## Cleanup
@@ -72,7 +87,7 @@ Redis and RBAC resources persist - no need to recreate them.
 ## Troubleshooting
 
 ### SCC Forbidden errors on pods
-Ensure both SCC grants from Step 2 were applied. Verify with:
+Ensure the SCC grant from Step 2 was applied. Verify with:
 ```bash
 oc adm policy who-can use scc privileged -n test-quay
 ```
@@ -82,3 +97,10 @@ oc adm policy who-can use scc privileged -n test-quay
 
 ### readOnlyRootFilesystem errors
 The emptyDir volume at `/tmp/logs` handles this. If a cluster SCC enforces readOnlyRootFilesystem, the emptyDir mount provides a writable path.
+
+### PVC not binding
+If the orchestrator pod is stuck in `Pending`, check PVC status:
+```bash
+oc get pvc quay-perf-results -n test-quay
+```
+Ensure the cluster has a default StorageClass. If not, add `storageClassName` to the PVC spec in `full-setup.yaml`.

@@ -8,7 +8,6 @@ spec:
   backoffLimit: 0
   template:
     spec:
-      serviceAccountName: quay-perf
       restartPolicy: Never
       containers:
         - name: python
@@ -65,4 +64,5 @@ spec:
         - name: tmp-logs
           emptyDir: {}
         - name: tmp-results
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: quay-perf-results
